@@ -1,0 +1,38 @@
+{
+  "id": "./",
+  "name": "Kadraj — HEIC Viewer & Converter",
+  "short_name": "Kadraj",
+  "description": "Open iPhone HEIC photos on your computer and convert them to JPG, PNG, WebP or PDF. Works offline; photos never leave your device.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#F6F5F2",
+  "theme_color": "#F6F5F2",
+  "lang": "en",
+  "dir": "ltr",
+  "categories": ["photo", "utilities", "productivity"],
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ],
+  "file_handlers": [
+    {
+      "action": "./",
+      "accept": {
+        "image/heic": [".heic", ".HEIC"],
+        "image/heif": [".heif", ".hif"],
+        "image/avif": [".avif"]
+      },
+      "icons": [{ "src": "icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    }
+  ],
+  "launch_handler": { "client_mode": ["navigate-existing", "auto"] },
+  "share_target": {
+    "action": "./share",
+    "method": "POST",
+    "enctype": "multipart/form-data",
+    "params": { "files": [{ "name": "photos", "accept": ["image/*", ".heic", ".heif"] }] }
+  }
+}
