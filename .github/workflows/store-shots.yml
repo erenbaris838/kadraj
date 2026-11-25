@@ -1,0 +1,157 @@
+name: Store screenshots
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/store-shots.yml'
+permissions:
+  contents: write
+jobs:
+  shots:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install
+        run: |
+          pip install playwright pillow pillow-heif
+          python -m playwright install --with-deps chromium
+          sudo apt-get install -y fonts-noto-cjk fonts-inter || sudo apt-get install -y fonts-noto-cjk
+          mkdir -p ~/.config/fontconfig
+          cat > ~/.config/fontconfig/fonts.conf <<'XML'
+          <?xml version="1.0"?>
+          <!DOCTYPE fontconfig SYSTEM "fonts.dtd">
+          <fontconfig>
+            <alias><family>sans-serif</family><prefer><family>Inter</family><family>Noto Sans CJK JP</family></prefer></alias>
+            <alias><family>system-ui</family><prefer><family>Inter</family><family>Noto Sans CJK JP</family></prefer></alias>
+          </fontconfig>
+          XML
+          fc-cache -f
+      - name: Photos
+        run: |
+          mkdir -p work/photos
+          dl() { curl -fsSL --retry 4 -o "work/photos/$1.jpg" "https://images.unsplash.com/$2?fm=jpg&q=88&w=2400"; }
+          dl gunduz photo-1634664125468-6583a2cda747
+          dl gece photo-1519681393784-d120267933ba
+          dl orman photo-1506452305024-9d3f02d1c9b5
+          dl okyanus photo-1468581264429-2548ef9eb732
+          dl lavanta photo-1600759487717-62bbb608106e
+          dl gunbatimi photo-1548272475-4a32d90e4f91
+          ls -la work/photos
+      - name: Screenshots
+        run: |
+          cat > work/run.py <<'PY'
+          # Kadraj Store screenshots: makes sample HEIC photos, opens the live app and captures 5 shots per language.
+          import asyncio, base64, glob, io, os, sys
+          from playwright.async_api import async_playwright
+          from PIL import Image
+          from PIL.TiffImagePlugin import IFDRational as R
+          import pillow_heif
+          pillow_heif.register_heif_opener()
+          W = os.environ.get('WORK', 'work'); URL = os.environ.get('APP', 'https://erenbaris838.github.io/kadraj/')
+          OUT = W + '/shots'; PH = W + '/heic'
+          os.makedirs(OUT, exist_ok=True); os.makedirs(PH, exist_ok=True)
+          LOC = {'tr': 'tr-TR', 'en': 'en-US', 'de': 'de-DE', 'es': 'es-ES', 'fr': 'fr-FR', 'it': 'it-IT', 'pt': 'pt-BR', 'ru': 'ru-RU', 'ja': 'ja-JP', 'zh': 'zh-CN'}
+
+          async def p3_icc(p):
+              b = await p.chromium.launch(); pg = await b.new_page()
+              url = await pg.evaluate("""() => { const c = document.createElement('canvas'); c.width = c.height = 4;
+                const x = c.getContext('2d', {colorSpace: 'display-p3'}); x.fillStyle = 'red'; x.fillRect(0, 0, 4, 4); return c.toDataURL('image/png'); }""")
+              await b.close()
+              return Image.open(io.BytesIO(base64.b64decode(url.split(',')[1]))).info.get('icc_profile')
+
+          def make_photos(icc):
+              plan = [('gunbatimi', (0, 0, 1, 1), 0), ('orman', (0, 0, 1, 1), 0), ('lavanta', (0, 0, 1, 1), 0), ('gece', (0, 0, 1, 1), 0),
+                      ('okyanus', (0, 0, 1, 1), 0), ('gunduz', (0, 0, 1, 1), 0), ('lavanta', (.35, 0, .75, 1), 1), ('gece', (.05, 0, .45, 1), 1),
+                      ('orman', (.55, 0, .95, 1), 1), ('gunbatimi', (.3, .1, .7, 1), 1), ('okyanus', (.1, 0, .5, 1), 1), ('gunduz', (.5, .1, .9, 1), 1)]
+              models = ['iPhone 15 Pro', 'iPhone 15 Pro', 'iPhone 14', 'iPhone 15 Pro', 'iPhone 13', 'iPhone 15 Pro']
+              for i, (name, box, portrait) in enumerate(plan):
+                  im = Image.open(f'{W}/photos/{name}.jpg').convert('RGB'); w, h = im.size
+                  im = im.crop((int(box[0] * w), int(box[1] * h), int(box[2] * w), int(box[3] * h))).resize((1512, 2016) if portrait else (2016, 1512))
+                  ex = Image.Exif(); model = models[i % 6]
+                  ex[0x010F] = 'Apple'; ex[0x0110] = model; ex[0x0131] = '18.1'
+                  dt = f'2026:10:{3 + i:02d} {9 + (i * 2) % 11:02d}:{(i * 7) % 60:02d}:{(i * 13) % 60:02d}'; ex[0x0132] = dt
+                  e = ex.get_ifd(0x8769)
+                  e[0x9003] = dt; e[0x9011] = '+03:00'; e[0x829A] = R(1, [60, 120, 250, 500, 1000][i % 5]); e[0x829D] = R(178, 100)
+                  e[0x8827] = [50, 64, 80, 100, 125, 400][i % 6]; e[0x920A] = R(686, 100); e[0xA405] = 24; e[0xA434] = f'{model} back triple camera 6.86mm f/1.78'
+                  if i % 3 != 2:
+                      g = ex.get_ifd(0x8825); g[1] = 'N'; g[2] = (41.0, float(i % 6), 12.0 + i); g[3] = 'E'; g[4] = (28.0, 58.0, 40.0 - i)
+                  kw = {'quality': 82, 'exif': ex.tobytes()}
+                  if icc: kw['icc_profile'] = icc
+                  im.save(f'{PH}/IMG_{4810 + i * 7}.HEIC', **kw)
+
+          async def ctx_for(b, lang, theme):
+              ctx = await b.new_context(viewport={'width': 1440, 'height': 810}, device_scale_factor=4 / 3, locale=LOC[lang], timezone_id='Europe/Istanbul')
+              lib = os.environ.get('ROUTE_LIB')
+              if lib:
+                  async def route_lib(route):
+                      name = route.request.url.split('/')[-1].split('?')[0]
+                      await route.fulfill(status=200, body=open(lib + name, 'rb').read(), headers={'content-type': 'application/wasm' if name.endswith('.wasm') else 'application/javascript', 'access-control-allow-origin': '*'})
+                  await ctx.route('**/libheif-js@1.23.5/libheif-wasm/*', route_lib)
+                  await ctx.route('**/unpkg.com/**', lambda r: r.abort())
+              await ctx.add_init_script(f"""try {{ localStorage.setItem('kadraj.lang', JSON.stringify('{lang}')); localStorage.setItem('kadraj.theme', JSON.stringify('{theme}'));
+                localStorage.setItem('kadraj.settings', JSON.stringify({{format:'jpeg',quality:90,size:0,page:'a4',keepExif:true,stripGps:true,saveMode:'folder',sort:'name'}}));
+                localStorage.setItem('kadraj.info', 'true'); }} catch (e) {{}} window.showSaveFilePicker = undefined;""")
+              return ctx
+
+          async def load_all(page, files):
+              await page.set_input_files('#fileIn', files)
+              for _ in range(200):
+                  st = await page.evaluate("__kadraj.items.map(i => i.status)")
+                  if len(st) >= len(files) and all(s in ('ok', 'err') for s in st): break
+                  await page.wait_for_timeout(300)
+              await page.wait_for_timeout(1000)
+
+          async def one(b, lang, files):
+              ctx = await ctx_for(b, lang, 'light'); page = await ctx.new_page()
+              await page.goto(URL); await page.wait_for_timeout(1500)
+              await load_all(page, files); await page.mouse.move(5, 805)
+              await page.screenshot(path=f'{OUT}/{lang}-1-galeri.png')
+              await page.evaluate("__kadraj.openViewer(__kadraj.items.find(i => i.name === 'IMG_4810.HEIC'))")
+              for _ in range(60):
+                  if await page.evaluate("!!__kadraj.viewer.bmp"): break
+                  await page.wait_for_timeout(250)
+              await page.wait_for_timeout(800); await page.mouse.move(720, 805)
+              await page.screenshot(path=f'{OUT}/{lang}-2-goruntuleyici.png')
+              await page.click('#vBack'); await page.wait_for_timeout(400)
+              await page.evaluate("""(lang) => { document.querySelector('#fmt button[data-v="webp"]').click();
+                const s = document.querySelector('#size'); s.value = '2048'; s.dispatchEvent(new Event('change'));
+                const L = window.KADRAJ_LANGS[lang].s; document.querySelector('#btnGo').hidden = true; document.querySelector('#prog').hidden = false;
+                document.querySelector('#progBar').style.width = '58%';
+                document.querySelector('#progTxt').textContent = L.working.replace('{i}', '7').replace('{n}', '12').replace('{name}', 'IMG_4852.HEIC'); }""", lang)
+              await page.wait_for_timeout(300)
+              await page.screenshot(path=f'{OUT}/{lang}-3-donustur.png'); await ctx.close()
+              ctx = await ctx_for(b, lang, 'light'); page = await ctx.new_page()
+              await page.goto(URL); await page.wait_for_timeout(1200)
+              await page.screenshot(path=f'{OUT}/{lang}-4-gizli.png'); await ctx.close()
+              ctx = await ctx_for(b, lang, 'dark'); page = await ctx.new_page()
+              await page.goto(URL); await page.wait_for_timeout(800)
+              await load_all(page, files)
+              await page.evaluate("""() => { const s = document.querySelector('#sort'); s.value = 'date'; s.dispatchEvent(new Event('change'));
+                const it = __kadraj.items; [2, 5, 9].forEach(k => { if (it[k] && it[k].el) it[k].el.querySelector('.chk').click(); }); }""")
+              await page.wait_for_timeout(800); await page.mouse.move(5, 805)
+              await page.screenshot(path=f'{OUT}/{lang}-5-koyu.png'); await ctx.close()
+
+          async def main():
+              langs = sys.argv[1].split(',') if len(sys.argv) > 1 else list(LOC)
+              async with async_playwright() as p:
+                  icc = await p3_icc(p)
+                  make_photos(icc)
+                  files = sorted(glob.glob(PH + '/*.HEIC'))
+                  for lang in langs:
+                      b = await p.chromium.launch(args=[f'--lang={LOC[lang]}'])
+                      await one(b, lang, files); await b.close(); print('done', lang, flush=True)
+          asyncio.run(main())
+          PY
+          WORK=work python work/run.py
+      - name: Publish to the store-assets branch
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd work/shots
+          git init -q -b store-assets
+          git add .
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -q -m "Store screenshots"
+          git push -f "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git" store-assets
